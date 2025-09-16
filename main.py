@@ -3,6 +3,9 @@ from src.simulator import Simulator
 from skopt import gp_minimize
 from skopt.space import Real
 from functools import partial
+import numpy as np
+import matplotlib.pyplot as plt
+import os
 
 # --- V2 Configuration ---
 GROUND_TRUTH_PARAMS = {
@@ -21,7 +24,7 @@ EXP_A_STEPS = 300
 EXP_B_IMPULSES = [(0, (30000, 0))]
 EXP_B_STEPS = 300
 
-# Stage C: The combined experiment for final refinement.
+# Stage C: The combined experiment for final refinement and plotting.
 EXP_C_IMPULSES = [(0, (8000, 8000)), (300, (25000, 0))]
 EXP_C_STEPS = 500
 
@@ -54,12 +57,50 @@ def objective_function(params, search_space_names, fixed_params, ground_truth_tr
     print(f"  {current_stage} Guess #{call_count}: ({param_str}) -> RMSE: {rmse:.2f}")
     return rmse
 
+def plot_results(ground_truth_traj, initial_guess_params, final_params, impulses, steps, filename):
+    """
+    Generates and saves a plot comparing the ground truth, initial guess,
+    and final calibrated trajectories.
+    """
+    print(f"\n--- Generating final plot... ---")
+    
+    # Get the trajectory for the initial incorrect guess
+    initial_sim = Simulator(params=initial_guess_params)
+    initial_traj = initial_sim.run_simulation_for_trajectory(steps=steps, impulses=impulses)
+
+    # Get the trajectory for the final calibrated parameters
+    final_sim = Simulator(params=final_params)
+    final_traj = final_sim.run_simulation_for_trajectory(steps=steps, impulses=impulses)
+
+    # Unzip trajectories for plotting
+    gt_x, gt_y = zip(*ground_truth_traj)
+    initial_x, initial_y = zip(*initial_traj)
+    final_x, final_y = zip(*final_traj)
+
+    plt.figure(figsize=(12, 8))
+    plt.plot(gt_x, gt_y, 'g-', label='Ground Truth Trajectory', linewidth=4, alpha=0.8)
+    plt.plot(initial_x, initial_y, 'r--', label='Initial Guess Trajectory', linewidth=2)
+    plt.plot(final_x, final_y, 'b:', label='Calibrated Trajectory', linewidth=2, alpha=0.9)
+    
+    plt.title('Causal Oracle Calibration Results', fontsize=16)
+    plt.xlabel('X Position', fontsize=12)
+    plt.ylabel('Y Position', fontsize=12)
+    plt.legend(fontsize=10)
+    plt.grid(True, which='both', linestyle='--', linewidth=0.5)
+    
+    # Ensure the figures directory exists
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    
+    plt.savefig(filename)
+    print(f"Plot saved successfully to {filename}")
+
 
 def run_staged_calibration():
     """
     Runs the entire V2 experiment using the definitive staged approach.
     """
-    best_params = {'friction': 0.5, 'elasticity': 0.5, 'mass': 15.0} # Start with a neutral guess
+    initial_guess = {'friction': 0.5, 'elasticity': 0.5, 'mass': 15.0} # Start with a neutral guess
+    best_params = initial_guess.copy()
     global call_count, current_stage
 
     # === STAGE A: OPTIMIZE ELASTICITY & MASS ===
@@ -67,13 +108,11 @@ def run_staged_calibration():
     call_count = 0
     print(f"\n--- {current_stage}: Isolating Elasticity and Mass ---")
     
-    # Establish ground truth for this specific experiment
     sim_a = Simulator(GROUND_TRUTH_PARAMS)
     traj_a = sim_a.run_simulation_for_trajectory(steps=EXP_A_STEPS, impulses=EXP_A_IMPULSES)
     
     search_space_a = [Real(0.1, 1.0, name='elasticity'), Real(5.0, 25.0, name='mass')]
     
-    # Create a partial function with the fixed friction parameter
     obj_a = partial(objective_function, 
                     search_space_names=['elasticity', 'mass'],
                     fixed_params={'friction': best_params['friction']},
@@ -120,7 +159,6 @@ def run_staged_calibration():
                     fixed_params={},
                     ground_truth_traj=traj_c, steps=EXP_C_STEPS, impulses=EXP_C_IMPULSES)
 
-    # We start the final search from the best point we've found so far
     result_c = gp_minimize(func=obj_c, dimensions=search_space_c, n_calls=70, x0=list(best_params.values()), n_initial_points=35, random_state=42, verbose=False)
     
     final_params = {
@@ -139,8 +177,17 @@ def run_staged_calibration():
     print(f"Calibrated Values  | {final_params['friction']:.4f}   | {final_params['elasticity']:.4f}     | {final_params['mass']:.2f}")
     print("-----------------------------------------------")
 
+    # --- Generate Final Plot ---
+    plot_results(
+        ground_truth_traj=traj_c,
+        initial_guess_params=initial_guess,
+        final_params=final_params,
+        impulses=EXP_C_IMPULSES,
+        steps=EXP_C_STEPS,
+        filename="paper/figures/trajectory_comparison.png"
+    )
+
 
 if __name__ == "__main__":
-    import numpy as np # Add numpy import for array operations
     run_staged_calibration()
 
